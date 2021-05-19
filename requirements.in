@@ -1,0 +1,3 @@
+psycopg2-binary
+apache-airflow[async,celery,password,postgres,slack,rabbitmq]
+pyamqp

@@ -1,0 +1,154 @@
+version: '3'
+x-airflow-common:
+  &airflow-common
+  image: apache/airflow:2.0.2
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+    AIRFLOW__CORE__SQL_ALCHEMY_CONN: postgresql+psycopg2://$POSTGRES_USER:$POSTGRES_PASS@$POSTGRES_HOST/$POSTGRES_DB
+    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://$POSTGRES_USER:$POSTGRES_PASS@$POSTGRES_HOST/$POSTGRES_DB
+    AIRFLOW__CELERY__BROKER_URL: amqp://$RABBIT_USER:$RABBIT_PASS@$RABBIT_HOST:$RABBIT_PORT/$RABBIT_VHOST
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'true'
+    AIRFLOW__API__AUTH_BACKEND: 'airflow.api.auth.backend.basic_auth'
+    AIRFLOW__CLI__ENDPOINT_URL: http://localhost:8080/airflow/api/experimental/
+    AIRFLOW__WEBSERVER__BASE_URL: http://localhost:8080/airflow
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./logs:/opt/airflow/logs
+  user: "${AIRFLOW_UID:-50000}:${AIRFLOW_GID:-50000}"
+  depends_on:
+    - rabbit
+    - postgres
+
+services:
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: $POSTGRES_USER
+      POSTGRES_PASSWORD: $POSTGRES_PASS
+      POSTGRES_DB: $POSTGRES_DB
+    volumes:
+      - $PWD/data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-U", "airflow" ]
+      interval: 5s
+      retries: 5
+    restart: always
+    networks:
+      - task_network
+
+
+  rabbit:
+    image: rabbitmq:3-management
+    restart: always
+    hostname: rabbit
+    environment:
+      - RABBITMQ_DEFAULT_USER=$RABBIT_USER
+      - RABBITMQ_DEFAULT_PASS=$RABBIT_PASS
+    ports:
+      - 8000:15672
+    volumes:
+      - rabbit-data:/var/lib/rabbitmq/mnesia/
+    networks:
+      - task_network
+      - web_network
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - 8080:8080
+    healthcheck:
+      test: [ "CMD", "curl", "--fail", "http://localhost:8080/health" ]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    restart: always
+    networks:
+      - task_network
+      - web_network
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    restart: always
+    networks:
+      - task_network
+
+  airflow-worker-0:
+    <<: *airflow-common
+    command: celery worker
+    restart: always
+    networks:
+      - task_network
+
+  airflow-worker-1:
+    <<: *airflow-common
+    command: celery worker
+    restart: always
+    networks:
+      - task_network
+
+  airflow-worker-2:
+    <<: *airflow-common
+    command: celery worker
+    restart: always
+    networks:
+      - task_network
+
+  airflow-init:
+    <<: *airflow-common
+    command: version
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_UPGRADE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USER:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASS:-airflow}
+    networks:
+      - task_network
+
+  flower:
+    <<: *airflow-common
+    command: celery flower --url-prefix=flower
+    ports:
+      - 5555:5555
+    healthcheck:
+      test: [ "CMD", "curl", "--fail", "http://localhost:5555/" ]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    restart: always
+    networks:
+      - task_network
+      - web_network
+
+  nginx:
+    image: nginx:latest
+    ports:
+      - 80:80
+    volumes:
+      - ./config/nginx:/etc/nginx/conf.d/
+    depends_on:
+      - airflow-webserver
+      - rabbit
+      - flower
+    networks:
+      - web_network
+
+
+
+networks:
+  task_network:
+    driver:
+      bridge
+
+  web_network:
+    driver:
+      bridge
+
+
+volumes:
+  rabbit-data:
